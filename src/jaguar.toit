@@ -16,6 +16,7 @@ import monitor
 import .aligned_reader
 import .programs
 import .system_message_handler
+import .eth_dev
 
 IDENTIFY_PORT ::= 1990
 IDENTIFY_ADDRESS ::= net.IpAddress.parse "255.255.255.255"
@@ -92,8 +93,12 @@ run id/uuid.Uuid name/string port/int:
   error := null
 
   try:
+//    catch --unwind=(: it != "ALREADY_IN_USE"):
+//      eth := EthernetDevice
+//      network = eth.ethernet_
     network = net.open
     socket/tcp.ServerSocket := network.tcp_listen port
+    logger.info "Socket created"
     address := "http://$network.address:$socket.local_address.port"
     logger.info "running Jaguar device '$name' (id: '$id') on '$address'"
 
@@ -120,7 +125,8 @@ run id/uuid.Uuid name/string port/int:
     // Wait for both tasks to finish.
     2.repeat: done.down
 
-  finally:
+  finally: | is_error e |
+    if is_error: print e
     if network: network.close
     if error: throw error
 
