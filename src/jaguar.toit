@@ -16,7 +16,6 @@ import monitor
 import .aligned_reader
 import .programs
 import .system_message_handler
-import .eth_dev
 
 IDENTIFY_PORT ::= 1990
 IDENTIFY_ADDRESS ::= net.IpAddress.parse "255.255.255.255"
