@@ -58,6 +58,29 @@ application onto it. This will ask you for the serial port to use and the WiFi c
 jag flash
 ```
 
+---
+*NOTE*
+
+To flash you will need to access the device `/dev/ttyUSB0`.  On Linux that
+means you probably need to be a member of some group, normally either `uucp` or
+`dialout`.  To see which groups you are a member of and which group owns the
+device, plug in an ESP32 to the USB port and try:
+
+``` sh
+groups
+ls -g /dev/ttyUSB0
+```
+
+If you lack a group membership, you can add it with
+
+``` sh
+sudo usermod -aG dialout $USER
+```
+
+You will have to log out and log back in for this to take effect.
+
+---
+
 Now it is possible to monitor the serial output from the device:
 
 ``` sh
@@ -144,38 +167,40 @@ export TOIT_PATH=<path to https://github.com/toitlang/toit clone>
 export JAG_PATH=<path to https://github.com/toitlang/jaguar clone>
 ```
 
-Now start with flashing the Jaguar application onto your ESP32. This is easily doable from
-within the `$TOIT_PATH` directory:
+First, we need to build the `toit.pkg` support from the `$TOIT_PATH` directory:
 
 ``` sh
-$TOIT_PATH/build/host/sdk/bin/toit.pkg install --project-root=$JAG_PATH
-make flash ESP32_ENTRY=$JAG_PATH/src/jaguar.toit \
-  ESP32_PORT=/dev/ttyUSB0 \
-  ESP32_WIFI_SSID="<ssid>" \
-  ESP32_WIFI_PASSWORD="<password>"
+cd $TOIT_PATH
+make sdk
 ```
 
-For building Jaguar, all you need to do is run from within your `$JAG_PATH` directory:
+Now we can compile the Jaguar assets necessary for flashing Jaguar onto your
+device. This is easily doable from within the `$JAG_PATH` directory.
 
 ``` sh
+cd $JAG_PATH
+$TOIT_PATH/build/host/sdk/bin/toit.pkg install --project-root=$JAG_PATH
+source $TOIT_PATH/third_party/esp-idf/export.sh
 make
 ```
 
-You can now run Jaguar by telling it where to find the Toit SDK and the snapshot for the
-Jaguar application for the ESP32:
+You can now flash Jaguar onto your device by telling it where to find the Toit SDK
+and the pre-built image for the Jaguar application for the ESP32:
 
 ``` sh
+cd $JAG_PATH
 export JAG_TOIT_PATH=$TOIT_PATH/build/host/sdk
-export JAG_ENTRY_POINT=$TOIT_PATH/build/snapshot
-build/jag scan
-```
-
-To also do the ESP32 flashing through Jaguar, you'll need two extra environment variables:
-
-``` sh
-export JAG_ESP32_BIN_PATH=$TOIT_PATH/build/esp32
+export JAG_ESP32_IMAGE_PATH=$JAG_PATH/build/image
 export JAG_ESPTOOL_PATH=$IDF_PATH/components/esptool_py/esptool/esptool.py
 build/jag flash --port=/dev/ttyUSB0 --wifi-ssid="<ssid>" --wifi-password="<password>"
+```
+
+The Jaguar command-line tool in `build/jag` now uses the environment variables from above
+to find the Toit SDK, so you start using it:
+
+``` sh
+cd $JAG_PATH
+build/jag scan
 ```
 
 ## Contributing
