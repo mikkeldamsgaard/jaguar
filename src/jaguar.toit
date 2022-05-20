@@ -21,7 +21,7 @@ DEVICE_ID_HEADER ::= "X-Jaguar-Device-ID"
 SDK_VERSION_HEADER ::= "X-Jaguar-SDK-Version"
 
 HTTP_PORT ::= 9000
-logger ::= log.Logger log.INFO_LEVEL log.DefaultTarget --name="jaguar"
+logger ::= log.Logger log.DEBUG_LEVEL log.DefaultTarget --name="jaguar"
 
 main args:
   try:
@@ -73,7 +73,9 @@ run id/uuid.Uuid name/string port/int:
 
   try:
     network = net.open
+    logger.info "network open"
     socket/tcp.ServerSocket := network.tcp_listen port
+    logger.info "socket open"
     address := "http://$network.address:$socket.local_address.port"
     logger.info "running Jaguar device '$name' (id: '$id') on '$address'"
 
@@ -108,6 +110,7 @@ install_mutex ::= monitor.Mutex
 
 install_program program_size/int reader/reader.Reader -> none:
   with_timeout --ms=60_000: install_mutex.do:
+    logger.info "cleaning containers"
     // Uninstall everything but Jaguar.
     images := containers.images
     jaguar := containers.current
@@ -117,6 +120,7 @@ install_program program_size/int reader/reader.Reader -> none:
       // the system image should react gracefully when someone tries
       // to uninstall it.
       if id != jaguar and id != uuid.NIL:
+        logger.debug "cleaning container: $id"
         containers.uninstall id
 
     logger.debug "installing program with $program_size bytes"
@@ -155,6 +159,7 @@ broadcast_identity network/net.Interface id/uuid.Uuid name/string address/string
 serve_incoming_requests socket/tcp.ServerSocket id/uuid.Uuid:
   server := http.Server --logger=logger
   server.listen socket:: | request/http.Request writer/http.ResponseWriter |
+    logger.info "Received request: $request.path"
     device_id_header := request.headers.single DEVICE_ID_HEADER
     sdk_version_header := request.headers.single SDK_VERSION_HEADER
 
