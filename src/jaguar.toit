@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import encoding.json
+import encoding.base64
 import http
 import log
 import net
@@ -70,13 +71,18 @@ run id/uuid.Uuid name/string port/int:
   server_task := null
   network/net.Interface? := null
   error := null
+  socket/tcp.ServerSocket? := null
 
   try:
     network = net.open
     logger.info "network open"
-    socket/tcp.ServerSocket := network.tcp_listen port
+    socket = network.tcp_listen port
     logger.info "socket open"
-    address := "http://$network.address:$socket.local_address.port"
+    adr := network.address
+    logger.info "Got adr"
+    logger.info  "addr: $adr"
+    logger.info  "port: $socket.local_address.port"
+    address := "http://$adr:$socket.local_address.port"
     logger.info "running Jaguar device '$name' (id: '$id') on '$address'"
 
     // We run two tasks concurrently: One broadcasts the device identity
@@ -102,8 +108,12 @@ run id/uuid.Uuid name/string port/int:
     // Wait for both tasks to finish.
     2.repeat: done.down
 
-  finally:
-    if network: network.close
+  finally: | i e/Exception_ |
+    if i:
+      print "Exception in run: $e.value"
+      system_send_ SYSTEM_MIRROR_MESSAGE_ e.trace
+
+    if socket: socket.close
     if error: throw error
 
 install_mutex ::= monitor.Mutex
