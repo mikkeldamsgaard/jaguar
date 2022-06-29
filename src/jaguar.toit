@@ -15,53 +15,62 @@ import uuid
 import monitor
 
 import system.containers
+import system.firmware
 
+HTTP_PORT ::= 9000
 IDENTIFY_PORT ::= 1990
 IDENTIFY_ADDRESS ::= net.IpAddress.parse "255.255.255.255"
+
 DEVICE_ID_HEADER ::= "X-Jaguar-Device-ID"
 SDK_VERSION_HEADER ::= "X-Jaguar-SDK-Version"
 
-HTTP_PORT ::= 9000
-logger ::= log.Logger log.DEBUG_LEVEL log.DefaultTarget --name="jaguar"
+logger ::= log.Logger log.INFO_LEVEL log.DefaultTarget --name="jaguar"
+validate_firmware / bool := firmware.is_validation_pending
 
-main args:
+main arguments:
   try:
-    exception := catch --trace: serve args
+    exception := catch --trace: serve arguments
     logger.error "rebooting due to $(exception)"
   finally:
     esp32.deep_sleep (Duration --s=1)
 
-serve args:
+serve arguments:
   port := HTTP_PORT
-  if args.size >= 1:
-    port = int.parse args[0]
+  if arguments.size >= 1:
+    port = int.parse arguments[0]
 
   image_config := {:}
   if platform == PLATFORM_FREERTOS:
     image_config = esp32.image_config or {:}
 
   id/uuid.Uuid := uuid.NIL
-  if args.size >= 2:
-    id = uuid.parse args[1]
+  if arguments.size >= 2:
+    id = uuid.parse arguments[1]
   else:
     id = image_config.get "id"
       --if_absent=: id
       --if_present=: uuid.parse it
 
   name/string := "unknown"
-  if args.size >= 3:
-    name = args[2]
+  if arguments.size >= 3:
+    name = arguments[2]
   else:
     name = image_config.get "name" --if_absent=: name
 
   while true:
+    attempts ::= 3
     failures := 0
-    attempts := 3
     while failures < attempts:
       exception := catch: run id name port
       if not exception: continue
       failures++
       logger.warn "running Jaguar failed due to '$exception' ($failures/$attempts)"
+    // If we need to validate the firmware and we've failed to do so
+    // in the first round of attempts, we roll back to the previous
+    // firmware right away.
+    if validate_firmware:
+      logger.error "firmware update was rejected after failing to connect or validate"
+      firmware.rollback
     backoff := Duration --s=5
     logger.info "backing off for $backoff"
     sleep backoff
@@ -73,17 +82,22 @@ run id/uuid.Uuid name/string port/int:
   error := null
   socket/tcp.ServerSocket? := null
 
+  socket/tcp.ServerSocket? := null
   try:
     network = net.open
-    logger.info "network open"
     socket = network.tcp_listen port
-    logger.info "socket open"
-    adr := network.address
-    logger.info "Got adr"
-    logger.info  "addr: $adr"
-    logger.info  "port: $socket.local_address.port"
-    address := "http://$adr:$socket.local_address.port"
+    address := "http://$network.address:$socket.local_address.port"
     logger.info "running Jaguar device '$name' (id: '$id') on '$address'"
+
+    // We've successfully connected to the network, so we consider
+    // the current firmware functional. Go ahead and validate the
+    // firmware if requested to do so.
+    if validate_firmware:
+      if firmware.validate:
+        logger.info "firmware update validated after connecting to network"
+        validate_firmware = false
+      else:
+        logger.error "firmware update failed to validate"
 
     // We run two tasks concurrently: One broadcasts the device identity
     // via UDP and one serves incoming HTTP requests. If one of the tasks
@@ -95,7 +109,7 @@ run id/uuid.Uuid name/string port/int:
       finally:
         server_task = null
         if broadcast_task: broadcast_task.cancel
-        done.up
+        critical_do: done.up
 
     broadcast_task = task::
       try:
@@ -103,17 +117,14 @@ run id/uuid.Uuid name/string port/int:
       finally:
         broadcast_task = null
         if server_task: server_task.cancel
-        done.up
+        critical_do: done.up
 
     // Wait for both tasks to finish.
     2.repeat: done.down
 
-  finally: | i e/Exception_ |
-    if i:
-      print "Exception in run: $e.value"
-      system_send_ SYSTEM_MIRROR_MESSAGE_ e.trace
-
+  finally:
     if socket: socket.close
+    if network: network.close
     if error: throw error
 
 install_mutex ::= monitor.Mutex
@@ -125,12 +136,7 @@ install_program program_size/int reader/reader.Reader -> none:
     images := containers.images
     jaguar := containers.current
     images.do: | id/uuid.Uuid |
-      // TODO(kasper): For now, we have to filter out the system
-      // process (NIL). It probably shouldn't be listed. Either way,
-      // the system image should react gracefully when someone tries
-      // to uninstall it.
-      if id != jaguar and id != uuid.NIL:
-        logger.debug "cleaning container: $id"
+      if id != jaguar:
         containers.uninstall id
 
     logger.debug "installing program with $program_size bytes"
@@ -145,26 +151,47 @@ install_program program_size/int reader/reader.Reader -> none:
     logger.info "starting program $program"
     containers.start program
 
-broadcast_identity network/net.Interface id/uuid.Uuid name/string address/string -> none:
-  socket := network.udp_open
-  socket.broadcast = true
-  msg := udp.Datagram
-    json.encode {
-      "method": "jaguar.identify",
-      "payload": {
-        "name": name,
-        "id": id.stringify,
-        "address": address,
-        "wordSize": BYTES_PER_WORD,
-      }
-    }
-    net.SocketAddress
-      IDENTIFY_ADDRESS
-      IDENTIFY_PORT
+install_firmware firmware_size/int reader/reader.Reader -> none:
+  with_timeout --ms=120_000: install_mutex.do:
+    logger.info "installing firmware with $firmware_size bytes"
+    written_size := 0
+    writer := firmware.FirmwareWriter 0 firmware_size
+    try:
+      last := null
+      while data := reader.read:
+        written_size += data.size
+        writer.write data
+        percent := (written_size * 100) / firmware_size
+        if percent != last:
+          logger.info "installing firmware with $firmware_size bytes ($percent%)"
+          last = percent
+      writer.commit
+      logger.info "installed firmware; rebooting"
+    finally:
+      writer.close
 
-  while true:
-    socket.send msg
-    sleep --ms=200
+broadcast_identity network/net.Interface id/uuid.Uuid name/string address/string -> none:
+  payload ::= json.encode {
+    "method": "jaguar.identify",
+    "payload": {
+      "name": name,
+      "id": id.stringify,
+      "sdkVersion": vm_sdk_version,
+      "address": address,
+      "wordSize": BYTES_PER_WORD,
+    }
+  }
+  datagram ::= udp.Datagram
+      payload
+      net.SocketAddress IDENTIFY_ADDRESS IDENTIFY_PORT
+  socket := network.udp_open
+  try:
+    socket.broadcast = true
+    while not network.is_closed:
+      socket.send datagram
+      sleep --ms=200
+  finally:
+    socket.close
 
 serve_incoming_requests socket/tcp.ServerSocket id/uuid.Uuid:
   server := http.Server --logger=logger
@@ -178,16 +205,27 @@ serve_incoming_requests socket/tcp.ServerSocket id/uuid.Uuid:
       logger.info "denied request, header: '$DEVICE_ID_HEADER' was '$device_id_header' not '$id'"
       writer.write_headers 403 --message="Device has id '$id', jag is trying to talk to '$device_id_header'"
 
-    // Validate SDK version.
+    // Handle pings.
+    else if request.path == "/ping" and request.method == "GET":
+      writer.write
+          json.encode {"status": "OK"}
+
+    // Handle firmware updates.
+    else if request.path == "/firmware" and request.method == "PUT":
+      install_firmware request.content_length request.body
+      writer.write
+          json.encode {"status": "OK"}
+      writer.detach.close  // Close connection nicely before rebooting.
+      sleep --ms=500
+      esp32.deep_sleep (Duration --ms=10)
+
+    // Validate SDK version before attempting to run code.
     else if sdk_version_header != vm_sdk_version:
       logger.info "denied request, header: '$SDK_VERSION_HEADER' was '$sdk_version_header' not '$vm_sdk_version'"
       writer.write_headers 406 --message="Device has $vm_sdk_version, jag has $sdk_version_header"
 
+    // Handle code running.
     else if request.path == "/code" and request.method == "PUT":
       install_program request.content_length request.body
       writer.write
-        json.encode {"status": "success"}
-
-    else if request.path == "/ping" and request.method == "GET":
-      writer.write
-        json.encode {"status": "OK"}
+          json.encode {"status": "OK"}

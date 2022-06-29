@@ -30,8 +30,12 @@ BUILD_SDK_VERSION = $(shell cd ./third_party/toit; ./../../tools/gitversion)
 
 JAG_BINARY := jag$(EXE_SUFFIX)
 
+# The default ("all") target is deliberately not used on the
+# continuous builders, so we do not need to worry about failing
+# the setup check there.
 .PHONY: all
 all: jag image
+	$(BUILD_DIR)/$(JAG_BINARY) setup --check
 
 .PHONY: jag
 jag: $(BUILD_DIR)/$(JAG_BINARY)
@@ -71,8 +75,8 @@ $(JAG_TOIT_PATH)/bin/toit.compiler $(JAG_TOIT_PATH)/bin/toit.pkg: toit-git-tags
 	$(JAG_TOIT_PATH)/bin/toit.pkg install
 
 .PHONY: $(TOIT_PATH)/build/esp32/
-$(TOIT_PATH)/build/esp32/: $(TOIT_SOURCE) .packages toit-git-tags
-	make -C $(TOIT_PATH) esp32
+$(TOIT_PATH)/build/esp32/: $(TOIT_SOURCE) .packages toit-git-tags install-dependencies
+	make -C $(TOIT_PATH) ESP32_ENTRY=$(JAG_ENTRY_POINT) esp32
 
 $(BUILD_DIR)/image/:
 	mkdir -p $@
@@ -83,23 +87,23 @@ $(BUILD_DIR)/image/bootloader/:
 $(BUILD_DIR)/image/toit.bin: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
 	cp $(TOIT_PATH)/build/esp32/toit.bin $@
 
+$(BUILD_DIR)/image/toit.elf: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
+	cp $(TOIT_PATH)/build/esp32/toit.elf $@
+
 $(BUILD_DIR)/image/bootloader/bootloader.bin: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/bootloader/
 	cp $(TOIT_PATH)/build/esp32/bootloader/bootloader.bin $@
 
 $(BUILD_DIR)/image/partitions.bin: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
 	cp $(TOIT_PATH)/build/esp32/partitions.bin $@
 
-$(BUILD_DIR)/image/jaguar.bin: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
-	cp $(TOIT_PATH)/build/esp32/programs.bin $@
-
-$(BUILD_DIR)/image/system.snapshot: $(BUILD_DIR)/image/ $(TOIT_PATH)/build/esp32/
+$(BUILD_DIR)/image/system.snapshot: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
 	cp $(TOIT_PATH)/build/esp32/system.snapshot $@
 
-.PHONY: $(BUILD_DIR)/image/jaguar.snapshot  # Force recompilation.
-$(BUILD_DIR)/image/jaguar.snapshot: $(JAG_ENTRY_POINT) $(BUILD_DIR)/image/ .packages install-dependencies
-	$(JAG_TOIT_PATH)/bin/toit.compile -w $@ $<
+$(BUILD_DIR)/image/jaguar.snapshot: $(TOIT_PATH)/build/esp32/ $(BUILD_DIR)/image/
+	cp $(TOIT_PATH)/build/esp32/program.snapshot $@
 
 .PHONY: image
+image: $(BUILD_DIR)/image/toit.elf
 image: $(BUILD_DIR)/image/toit.bin
 image: $(BUILD_DIR)/image/bootloader/bootloader.bin
 image: $(BUILD_DIR)/image/partitions.bin
@@ -110,7 +114,7 @@ image: $(BUILD_DIR)/image/jaguar.snapshot
 install-esp-idf:
 	IDF_PATH=$(IDF_PATH) $(IDF_PATH)/install.sh
 
-.PHONY: install-packages
+.PHONY: install-dependencies
 install-dependencies: $(JAG_TOIT_PATH)/bin/toit.pkg
 	$(JAG_TOIT_PATH)/bin/toit.pkg --auto-sync=false --project-root=$(CURDIR) install
 
