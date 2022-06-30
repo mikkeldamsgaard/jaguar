@@ -9,22 +9,28 @@ import (
 	"os"
 
 	"github.com/toitlang/jaguar/cmd/jag/commands"
+	"github.com/toitlang/jaguar/cmd/jag/directory"
 )
 
 var (
-	date       = "2022-06-19T05:40:43Z"
-	version    = "v1.2.4"
-	sdkVersion = "v2.0.0-alpha.7"
+	date       = "2022-06-30T12:03:13Z"
+	version    = "v1.2.7"
+	sdkVersion = "v2.0.0-alpha.10"
 )
 
+var buildMode = "development"
+
 func main() {
+	isReleaseBuild := buildMode == "release"
+	directory.IsReleaseBuild = isReleaseBuild
+
 	info := commands.Info{
 		Date:       date,
 		Version:    version,
 		SDKVersion: sdkVersion,
 	}
 	ctx := commands.SetInfo(context.Background(), info)
-	if err := commands.JagCmd(info).ExecuteContext(ctx); err != nil {
+	if err := commands.JagCmd(info, isReleaseBuild).ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }
