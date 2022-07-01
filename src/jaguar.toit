@@ -82,7 +82,6 @@ run id/uuid.Uuid name/string port/int:
   error := null
   socket/tcp.ServerSocket? := null
 
-  socket/tcp.ServerSocket? := null
   try:
     network = net.open
     socket = network.tcp_listen port
