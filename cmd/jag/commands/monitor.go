@@ -5,9 +5,11 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,6 +23,13 @@ func MonitorCmd() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			Version := ""
+			POSTPONED_LINES := map[string]bool{
+				"----": true,
+				"Received a Toit stack trace. Executing the command below will": true,
+				"make it human readable:": true,
+			}
+
 			port, err := cmd.Flags().GetString("port")
 			if err != nil {
 				return err
@@ -52,8 +61,49 @@ func MonitorCmd() *cobra.Command {
 				dev.Reboot()
 			}
 
-			_, err = io.Copy(os.Stdout, dev)
-			return err
+			scanner := bufio.NewScanner(dev)
+
+			postponed := []string{}
+
+			for scanner.Scan() {
+				// Get next line from serial port.
+				line := scanner.Text()
+				versionPrefix := "[toit] INFO: starting <v"
+				if strings.HasPrefix(line, versionPrefix) && strings.HasSuffix(line, ">") {
+					Version = line[len(versionPrefix) : len(line)-1]
+				}
+				if _, contains := POSTPONED_LINES[line]; contains {
+					postponed = append(postponed, line)
+				} else {
+					separator := strings.Repeat("*", 78)
+					if strings.HasPrefix(line, "jag decode ") || strings.HasPrefix(line, "Backtrace:") {
+						fmt.Printf("\n" + separator + "\n")
+						if Version != "" {
+							fmt.Printf("Decoded by `jag monitor` <%s>\n", Version)
+							fmt.Printf(separator + "\n")
+						}
+						if err := serialDecode(cmd, line); err != nil {
+							if len(postponed) != 0 {
+								fmt.Println(strings.Join(postponed, "\n"))
+								postponed = []string{}
+							}
+							fmt.Println(line)
+							fmt.Println("jag monitor: Failed to decode line.")
+						} else {
+							postponed = []string{}
+						}
+						fmt.Printf(separator + "\n\n")
+					} else {
+						if len(postponed) != 0 {
+							fmt.Println(strings.Join(postponed, "\n"))
+							postponed = []string{}
+						}
+						fmt.Println(line)
+					}
+				}
+			}
+
+			return scanner.Err()
 		},
 	}
 
