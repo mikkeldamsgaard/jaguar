@@ -80,8 +80,8 @@ run id/uuid.Uuid name/string port/int:
   server_task := null
   network/net.Interface? := null
   error := null
-  socket/tcp.ServerSocket? := null
 
+  socket/tcp.ServerSocket? := null
   try:
     network = net.open
     socket = network.tcp_listen port
@@ -130,7 +130,6 @@ install_mutex ::= monitor.Mutex
 
 install_program program_size/int reader/reader.Reader -> none:
   with_timeout --ms=60_000: install_mutex.do:
-    logger.info "cleaning containers"
     // Uninstall everything but Jaguar.
     images := containers.images
     jaguar := containers.current
@@ -195,7 +194,6 @@ broadcast_identity network/net.Interface id/uuid.Uuid name/string address/string
 serve_incoming_requests socket/tcp.ServerSocket id/uuid.Uuid:
   server := http.Server --logger=logger
   server.listen socket:: | request/http.Request writer/http.ResponseWriter |
-    logger.info "Received request: $request.path"
     device_id_header := request.headers.single DEVICE_ID_HEADER
     sdk_version_header := request.headers.single SDK_VERSION_HEADER
 
