@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"bufio"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -50,6 +51,38 @@ func jagDecode(cmd *cobra.Command, base64Message string) error {
 	sdk, err := GetSDK(ctx)
 	if err != nil {
 		return err
+	}
+
+	equalsIndex := strings.Index(base64Message, "=")
+	if equalsIndex != -1 && !strings.HasSuffix(base64Message, "=") {
+		// The = symbols that optionally indicate the end of the base64
+		// encoding are not at the end.  Let's trim the junk off the end.
+		if base64Message[equalsIndex+1] == '=' {
+			// There might be two = signs at the end.
+			equalsIndex++
+		}
+		base64Message = base64Message[0 : equalsIndex+1]
+	} else {
+		// Try to trim, based on the first index of something that is not
+		// allowed in base64 encoding.
+		i := 0
+		for ; i < len(base64Message); i++ {
+			c := base64Message[i]
+			if 'a' <= c && c <= 'z' {
+				continue
+			}
+			if 'A' <= c && c <= 'Z' {
+				continue
+			}
+			if '0' <= c && c <= '9' {
+				continue
+			}
+			if c == '+' || c == '/' || c == '=' {
+				continue
+			}
+			break
+		}
+		base64Message = base64Message[0:i]
 	}
 
 	message, err := base64.StdEncoding.DecodeString(base64Message)
@@ -106,7 +139,7 @@ func jagDecode(cmd *cobra.Command, base64Message string) error {
 		return fmt.Errorf("cannot find snapshot for program: %s", programId.String())
 	}
 
-	decodeCommand := sdk.ToitRun(ctx, sdk.SystemMessageSnapshotPath(), snapshot, "-b", base64Message)
+	decodeCommand := sdk.SystemMessage(ctx, snapshot, "-b", base64Message)
 	decodeCommand.Stderr = os.Stderr
 	decodeCommand.Stdout = os.Stdout
 	return decodeCommand.Run()
@@ -132,10 +165,65 @@ func crashDecode(cmd *cobra.Command, backtrace string) error {
 	if err != nil {
 		return err
 	}
-	stacktraceCommand := sdk.ToitRun(ctx, sdk.StacktracePath(), "--objdump", objdump, "--backtrace", backtrace, elf)
+	stacktraceCommand := sdk.Stacktrace(ctx, "--objdump", objdump, "--backtrace", backtrace, elf)
 	stacktraceCommand.Stderr = os.Stderr
 	stacktraceCommand.Stdout = os.Stdout
 	fmt.Println("Crash in native code:")
 	fmt.Println(backtrace)
 	return stacktraceCommand.Run()
+}
+
+type Decoder struct {
+	scanner *bufio.Scanner
+	cmd     *cobra.Command
+}
+
+func (d *Decoder) decode() {
+	POSTPONED_LINES := map[string]bool{
+		"----": true,
+		"Received a Toit stack trace. Executing the command below will": true,
+		"make it human readable:": true,
+	}
+
+	Version := ""
+
+	postponed := []string{}
+
+	for d.scanner.Scan() {
+		// Get next line from device (or simulator) console.
+		line := d.scanner.Text()
+		versionPrefix := "[toit] INFO: starting <v"
+		if strings.HasPrefix(line, versionPrefix) && strings.HasSuffix(line, ">") {
+			Version = line[len(versionPrefix) : len(line)-1]
+		}
+		if _, contains := POSTPONED_LINES[line]; contains {
+			postponed = append(postponed, line)
+		} else {
+			separator := strings.Repeat("*", 78)
+			if strings.HasPrefix(line, "jag decode ") || strings.HasPrefix(line, "Backtrace:") {
+				fmt.Printf("\n" + separator + "\n")
+				if Version != "" {
+					fmt.Printf("Decoded by `jag` <%s>\n", Version)
+					fmt.Printf(separator + "\n")
+				}
+				if err := serialDecode(d.cmd, line); err != nil {
+					if len(postponed) != 0 {
+						fmt.Println(strings.Join(postponed, "\n"))
+						postponed = []string{}
+					}
+					fmt.Println(line)
+					fmt.Println("jag: Failed to decode line.")
+				} else {
+					postponed = []string{}
+				}
+				fmt.Printf(separator + "\n\n")
+			} else {
+				if len(postponed) != 0 {
+					fmt.Println(strings.Join(postponed, "\n"))
+					postponed = []string{}
+				}
+				fmt.Println(line)
+			}
+		}
+	}
 }

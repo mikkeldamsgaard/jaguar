@@ -17,7 +17,7 @@ import (
 const (
 	// UserConfigPathEnv if set, will load the user config from that path.
 	UserConfigPathEnv    = "JAG_USER_CONFIG_PATH"
-	WorkspacePathEnv     = "JAG_WORKSPACE_PATH"
+	DeviceConfigPathEnv  = "JAG_DEVICE_CONFIG_PATH"
 	SnapshotCachePathEnv = "JAG_SNAPSHOT_CACHE_PATH"
 	configFile           = ".jaguar"
 
@@ -32,37 +32,6 @@ const (
 // Hackishly set by main.go.
 var IsReleaseBuild = false
 
-func GetWorkspacePath() (string, error) {
-	path, ok := os.LookupEnv(WorkspacePathEnv)
-	if ok {
-		return path, nil
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	dir := cwd
-
-	for {
-		candidate := filepath.Join(dir, configFile)
-		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
-			return dir, nil
-		}
-
-		next := filepath.Dir(dir)
-		if next == dir {
-			return cwd, os.ErrNotExist
-		}
-		dir = next
-	}
-}
-
-func GetWorkspaceConfigPath() (string, error) {
-	ws, err := GetWorkspacePath()
-	return filepath.Join(ws, configFile), err
-}
-
 func GetUserConfigPath() (string, error) {
 	if path, ok := os.LookupEnv(UserConfigPathEnv); ok {
 		return path, nil
@@ -73,6 +42,18 @@ func GetUserConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(homedir, ".config", "jaguar", "config.yaml"), nil
+}
+
+func GetDeviceConfigPath() (string, error) {
+	if path, ok := os.LookupEnv(DeviceConfigPathEnv); ok {
+		return path, nil
+	}
+
+	homedir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homedir, ".config", "jaguar", "device.yaml"), nil
 }
 
 func GetSnapshotsCachePath() (string, error) {
@@ -127,12 +108,7 @@ func GetESP32ImageCachePath() (string, error) {
 	return filepath.Join(home, ".cache", "jaguar", "image"), nil
 }
 
-func GetESP32ImagePath() (string, error) {
-	repoPath, ok := getRepoPath()
-	if ok {
-		return filepath.Join(repoPath, "build", "esp32"), nil
-	}
-
+func GetESP32CachePath() (string, error) {
 	imagePath, err := GetESP32ImageCachePath()
 	if err != nil {
 		return "", err
@@ -141,6 +117,24 @@ func GetESP32ImagePath() (string, error) {
 		return "", fmt.Errorf("the path '%s' did not hold the esp32 image.\nYou must setup the esp32 image using 'jag setup'", imagePath)
 	}
 	return imagePath, nil
+}
+
+func GetToitToolchainPath() (string, error) {
+	repoPath, ok := getRepoPath()
+	if ok {
+		return filepath.Join(repoPath, "toolchains", "esp32"), nil
+	}
+
+	return GetESP32CachePath()
+}
+
+func GetESP32ImagePath() (string, error) {
+	repoPath, ok := getRepoPath()
+	if ok {
+		return filepath.Join(repoPath, "build", "esp32"), nil
+	}
+
+	return GetESP32CachePath()
 }
 
 func getImageSnapshotPath(name string) (string, error) {
@@ -208,22 +202,6 @@ func ensureDirectory(dir string, err error) (string, error) {
 	return dir, os.MkdirAll(dir, 0755)
 }
 
-func GetWorkspaceConfig() (*viper.Viper, error) {
-	path, err := GetWorkspaceConfigPath()
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to get workspace config path: %w", err)
-	}
-	cfg := viper.New()
-	cfg.SetConfigType("yaml")
-	cfg.SetConfigFile(path)
-	if !os.IsNotExist(err) {
-		if err := cfg.ReadInConfig(); err != nil {
-			return nil, fmt.Errorf("failed to read workspace config: %w", err)
-		}
-	}
-	return cfg, nil
-}
-
 func GetUserConfig() (*viper.Viper, error) {
 	path, err := GetUserConfigPath()
 	if err != nil {
@@ -236,6 +214,23 @@ func GetUserConfig() (*viper.Viper, error) {
 	if _, err := os.Stat(path); err == nil {
 		if err := cfg.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("failed to read user config: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
+func GetDeviceConfig() (*viper.Viper, error) {
+	path, err := GetDeviceConfigPath()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device config path: %w", err)
+	}
+
+	cfg := viper.New()
+	cfg.SetConfigType("yaml")
+	cfg.SetConfigFile(path)
+	if _, err := os.Stat(path); err == nil {
+		if err := cfg.ReadInConfig(); err != nil {
+			return nil, fmt.Errorf("failed to read device config: %w", err)
 		}
 	}
 	return cfg, nil

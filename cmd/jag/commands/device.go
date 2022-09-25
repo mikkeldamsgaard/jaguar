@@ -20,6 +20,7 @@ import (
 const (
 	JaguarDeviceIDHeader   = "X-Jaguar-Device-ID"
 	JaguarSDKVersionHeader = "X-Jaguar-SDK-Version"
+	JaguarRunDefinesHeader = "X-Jaguar-Run-Defines"
 )
 
 type Devices struct {
@@ -72,13 +73,16 @@ func (d Device) Ping(ctx context.Context, sdk *SDK) bool {
 	return res.StatusCode == http.StatusOK
 }
 
-func (d Device) Run(ctx context.Context, sdk *SDK, b []byte) error {
+func (d Device) Run(ctx context.Context, sdk *SDK, b []byte, defines string) error {
 	req, err := http.NewRequestWithContext(ctx, "PUT", d.Address+"/code", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	req.Header.Set(JaguarDeviceIDHeader, d.ID)
 	req.Header.Set(JaguarSDKVersionHeader, sdk.Version)
+	if defines != "" {
+		req.Header.Set(JaguarRunDefinesHeader, defines)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

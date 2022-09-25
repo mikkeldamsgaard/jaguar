@@ -8,6 +8,7 @@ require (
 	github.com/blakesmith/ar v0.0.0-20190502131153-809d4375e1fb
 	github.com/bradfitz/gomemcache v0.0.0-20220106215444-fb4bf637b56d
 	github.com/cheggaaa/pb/v3 v3.0.8
+	github.com/coreos/go-semver v0.3.0
 	github.com/fsnotify/fsnotify v1.5.1
 	github.com/google/uuid v1.3.0
 	github.com/manifoldco/promptui v0.9.0
@@ -16,7 +17,7 @@ require (
 	github.com/setanta314/ar v0.0.0-20190524173558-797cd0c6714c
 	github.com/spf13/viper v1.9.0
 	github.com/tatsuhiro-t/go-nghttp2 v0.0.0-20150408091349-4742878d9c90
-	github.com/toitlang/tpkg v0.0.0-20220208100452-339a2ab582da
+	github.com/toitlang/tpkg v0.0.0-20220727131228-5d149728b2ba
 	github.com/toitware/ubjson v0.0.0-20211207075236-aa4add2fcd1a
 	github.com/xtgo/uuid v0.0.0-20140804021211-a0b114877d4c
 	go.bug.st/serial v1.3.3

@@ -88,7 +88,7 @@ func RunCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := directory.GetWorkspaceConfig()
+			cfg, err := directory.GetDeviceConfig()
 			if err != nil {
 				return err
 			}
@@ -119,15 +119,20 @@ func RunCmd() *cobra.Command {
 				return err
 			}
 
-			return RunFile(cmd, device, sdk, entrypoint)
+			runOptions, err := parseRunDefinesFlags(cmd, "define")
+			if err != nil {
+				return err
+			}
+			return RunFile(cmd, device, sdk, entrypoint, runOptions)
 		},
 	}
 
-	cmd.Flags().StringP("device", "d", "", "use device with a given name or id")
+	cmd.Flags().StringP("device", "d", "", "use device with a given name, id, or address")
+	cmd.Flags().StringArrayP("define", "D", nil, "define settings to control run on device")
 	return cmd
 }
 
-func RunFile(cmd *cobra.Command, device *Device, sdk *SDK, path string) error {
+func RunFile(cmd *cobra.Command, device *Device, sdk *SDK, path string, defines string) error {
 	fmt.Printf("Running '%s' on '%s' ...\n", path, device.Name)
 	ctx := cmd.Context()
 
@@ -215,7 +220,7 @@ func RunFile(cmd *cobra.Command, device *Device, sdk *SDK, path string) error {
 		return err
 	}
 
-	if err := device.Run(ctx, sdk, b); err != nil {
+	if err := device.Run(ctx, sdk, b, defines); err != nil {
 		fmt.Println("Error:", err)
 		// We just printed the error.
 		// Mark the command as silent to avoid printing the error twice.

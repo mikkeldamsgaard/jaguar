@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -50,7 +51,14 @@ func GetSDK(ctx context.Context) (*SDK, error) {
 		Version: version,
 	}
 	info := GetInfo(ctx)
-	_, skipVersionCheck := os.LookupEnv(directory.ToitRepoPathEnv)
+	// If we're running a development build, we skip the SDK version checks
+	// if the SDK is pulled in through the JAG_TOIT_REPO_PATH environment
+	// variable. This make it much easier to work with. For release builds,
+	// we always check and deliberately ignore the environment variable.
+	skipVersionCheck := false
+	if !directory.IsReleaseBuild {
+		_, skipVersionCheck = os.LookupEnv(directory.ToitRepoPathEnv)
+	}
 	return res, res.validate(info, skipVersionCheck)
 }
 
@@ -60,10 +68,6 @@ func (s *SDK) ToitCompilePath() string {
 
 func (s *SDK) ToitRunPath() string {
 	return filepath.Join(s.Path, "bin", directory.Executable("toit.run"))
-}
-
-func (s *SDK) ToitRunSnapshotPath() string {
-	return filepath.Join(s.Path, "bin", "toit.run.snapshot")
 }
 
 func (s *SDK) ToitLspPath() string {
@@ -78,20 +82,20 @@ func (s *SDK) DownloaderInfoPath() string {
 	return filepath.Join(s.Path, "JAGUAR")
 }
 
-func (s *SDK) SystemMessageSnapshotPath() string {
-	return filepath.Join(s.Path, "snapshots", "system_message.snapshot")
+func (s *SDK) SystemMessagePath() string {
+	return filepath.Join(s.Path, "tools", directory.Executable("system_message"))
 }
 
 func (s *SDK) SnapshotToImagePath() string {
-	return filepath.Join(s.Path, "snapshots", "snapshot_to_image.snapshot")
+	return filepath.Join(s.Path, "tools", directory.Executable("snapshot_to_image"))
 }
 
 func (s *SDK) InjectConfigPath() string {
-	return filepath.Join(s.Path, "snapshots", "inject_config.snapshot")
+	return filepath.Join(s.Path, "tools", directory.Executable("inject_config"))
 }
 
 func (s *SDK) StacktracePath() string {
-	return filepath.Join(s.Path, "snapshots", "stacktrace.snapshot")
+	return filepath.Join(s.Path, "tools", directory.Executable("stacktrace"))
 }
 
 func (s *SDK) validate(info Info, skipSDKVersionCheck bool) error {
@@ -121,12 +125,12 @@ func (s *SDK) validate(info Info, skipSDKVersionCheck bool) error {
 	paths := []string{
 		s.ToitCompilePath(),
 		s.ToitRunPath(),
-		s.ToitRunSnapshotPath(),
 		s.ToitLspPath(),
 		s.VersionPath(),
-		s.SystemMessageSnapshotPath(),
+		s.SystemMessagePath(),
 		s.SnapshotToImagePath(),
 		s.InjectConfigPath(),
+		s.StacktracePath(),
 	}
 	for _, p := range paths {
 		if err := checkFilepath(p, "invalid Toit SDK"); err != nil {
@@ -161,6 +165,22 @@ func (s *SDK) ToitLsp(ctx context.Context, args []string) *exec.Cmd {
 	return exec.CommandContext(ctx, s.ToitLspPath(), args...)
 }
 
+func (s *SDK) SnapshotToImage(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.SnapshotToImagePath(), args...)
+}
+
+func (s *SDK) SystemMessage(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.SystemMessagePath(), args...)
+}
+
+func (s *SDK) Stacktrace(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.StacktracePath(), args...)
+}
+
+func (s *SDK) InjectConfig(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.InjectConfigPath(), args...)
+}
+
 func (s *SDK) Compile(ctx context.Context, snapshot string, entrypoint string) error {
 	buildSnap := s.ToitCompile(ctx, "-w", snapshot, entrypoint)
 	buildSnap.Stderr = os.Stderr
@@ -184,7 +204,7 @@ func (s *SDK) Build(ctx context.Context, device *Device, snapshot string) ([]byt
 		bits = "-m64"
 	}
 
-	buildImage := s.ToitRun(ctx, s.SnapshotToImagePath(), "--binary", bits, "--output", image.Name(), snapshot)
+	buildImage := s.SnapshotToImage(ctx, "--binary", bits, "--output", image.Name(), snapshot)
 	buildImage.Stderr = os.Stderr
 	buildImage.Stdout = os.Stdout
 	if err := buildImage.Run(); err != nil {
@@ -307,6 +327,48 @@ type encoder interface {
 	Encode(interface{}) error
 }
 
+func parseRunDefinesFlags(cmd *cobra.Command, flagName string) (string, error) {
+	if !cmd.Flags().Changed(flagName) {
+		return "", nil
+	}
+
+	definesFlags, err := cmd.Flags().GetStringArray(flagName)
+	if err != nil {
+		return "", err
+	}
+
+	definesMap := make(map[string]interface{})
+	for _, element := range definesFlags {
+		indexOfAssign := strings.Index(element, "=")
+		if indexOfAssign < 0 {
+			key := strings.TrimSpace(element)
+			definesMap[key] = true
+		} else {
+			key := strings.TrimSpace(element[0:indexOfAssign])
+			value := strings.TrimSpace(element[indexOfAssign+1:])
+
+			// Try to parse the value as a JSON value and avoid turning
+			// it into a string if it is valid.
+			var unmarshalled interface{}
+			err := json.Unmarshal([]byte(value), &unmarshalled)
+			if err == nil {
+				definesMap[key] = unmarshalled
+			} else {
+				definesMap[key] = value
+			}
+		}
+	}
+	if len(definesMap) == 0 {
+		return "", nil
+	}
+
+	marshalled, err := json.Marshal(definesMap)
+	if err != nil {
+		return "", err
+	}
+	return string(marshalled), nil
+}
+
 func parseOutputFlag(cmd *cobra.Command) (encoder, error) {
 	list, err := cmd.Flags().GetBool("list")
 	if err != nil {
@@ -341,10 +403,17 @@ func parseDeviceFlag(cmd *cobra.Command) (deviceSelect, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDeviceSelection(d), nil
+}
+
+func parseDeviceSelection(d string) deviceSelect {
 	if _, err := uuid.Parse(d); err == nil {
-		return deviceIDSelect(d), nil
+		return deviceIDSelect(d)
 	}
-	return deviceNameSelect(d), nil
+	if ip := net.ParseIP(d); ip != nil {
+		return deviceAddressSelect(d)
+	}
+	return deviceNameSelect(d)
 }
 
 type shortEncoder struct {
@@ -374,4 +443,52 @@ func (s *shortEncoder) Encode(v interface{}) error {
 		fmt.Fprintln(s.w, e.Short())
 	}
 	return nil
+}
+
+func getWifiCredentials(cmd *cobra.Command) (string, string, error) {
+	var wifiSSID string
+	var err error
+
+	cfg, err := directory.GetUserConfig()
+	if err != nil {
+		return "", "", err
+	}
+
+	if cmd.Flags().Changed("wifi-ssid") {
+		wifiSSID, err = cmd.Flags().GetString("wifi-ssid")
+		if err != nil {
+			return "", "", err
+		}
+	} else if v, ok := os.LookupEnv(directory.WifiSSIDEnv); ok {
+		wifiSSID = v
+	} else if cfg.IsSet(WifiCfgKey + "." + WifiSSIDCfgKey) {
+		wifiSSID = cfg.GetString(WifiCfgKey + "." + WifiSSIDCfgKey)
+	} else {
+		fmt.Printf("Enter WiFi network (SSID): ")
+		wifiSSID, err = ReadLine()
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	var wifiPassword string
+	if cmd.Flags().Changed("wifi-password") {
+		wifiPassword, err = cmd.Flags().GetString("wifi-password")
+		if err != nil {
+			return "", "", err
+		}
+	} else if v, ok := os.LookupEnv(directory.WifiPasswordEnv); ok {
+		wifiPassword = v
+	} else if cfg.IsSet(WifiCfgKey + "." + WifiPasswordCfgKey) {
+		wifiPassword = cfg.GetString(WifiCfgKey + "." + WifiPasswordCfgKey)
+	} else {
+		fmt.Printf("Enter WiFi password for '%s': ", wifiSSID)
+		pw, err := ReadPassword()
+		if err != nil {
+			fmt.Printf("\n")
+			return "", "", err
+		}
+		wifiPassword = string(pw)
+	}
+	return wifiSSID, wifiPassword, nil
 }
