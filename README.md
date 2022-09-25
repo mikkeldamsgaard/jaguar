@@ -26,28 +26,27 @@ version of the program gets to start again from `main`.
 Unless you want to [build Jaguar from source](#building-it-yourself), start by
 downloading and installing the `jag` binary for your host platform.
 
-On Windows 10+ you can use the [Windows package manager](https://docs.microsoft.com/en-us/windows/package-manager/winget/):
-```
-winget install --id=toit.jaguar -e
-```
-
 On macOS, you can use [Homebrew](https://brew.sh/) to manage the installation of `jag`:
 ``` sh
 brew install toitlang/toit/jag
+```
+
+On Windows 10+ you can use the [Windows package manager](https://docs.microsoft.com/en-us/windows/package-manager/winget/):
+```
+winget install --id=toit.jaguar -e
 ```
 
 For Archlinux you can install the AUR package [jaguar-bin](https://aur.archlinux.org/packages/jaguar-bin):
 ``` sh
 yay install jaguar-bin
 ```
-If you see errors when upgrading with `yay` make sure to pick "cleanBuild" for the package.
 
 As alternative to these package managers, we also offer precompiled binaries for download:
 
-- [Download Jaguar for Windows](https://github.com/toitlang/jaguar/releases/latest/download/jag_installer.exe)
-  (or as an [archive](https://github.com/toitlang/jaguar/releases/latest/download/jag_windows.zip))
 - [Download Jaguar for macOS](https://github.com/toitlang/jaguar/releases/latest/download/jag.dmg)
   (or as an [archive](https://github.com/toitlang/jaguar/releases/latest/download/jag_macos.zip))
+- [Download Jaguar for Windows](https://github.com/toitlang/jaguar/releases/latest/download/jag_installer.exe)
+  (or as an [archive](https://github.com/toitlang/jaguar/releases/latest/download/jag_windows.zip))
 - [Download Jaguar for Linux](https://github.com/toitlang/jaguar/releases/latest/download/jag_linux.tgz)
   (only as an archive)
 
@@ -105,6 +104,37 @@ jag watch hello.toit
 
 and edit `hello.toit` or any of the files it depends on in your favorite editor.
 
+### Installing services and drivers
+Jaguar supports installing named containers that are automatically run when the system boots. They can be used
+to provide services and implement drivers for peripherals. The services and drivers can be used by 
+applications and as such they form an instrumental part of the extensibility of a Jaguar based system.
+
+You can list the currently installed containers on a device through:
+
+``` sh
+jag container list
+```
+
+This results in a list that shows the container image ids and the associated names.
+
+```
+$ jag container list
+85c64060-ffbd-5e04-a0dd-252d5bbf4a32: print-service
+4e9a12bc-7f07-5118-9f04-8ad2bbe476d1: jaguar
+```
+
+You install a new, or update an existing, container through:
+
+``` sh
+jag container install print-service service.toit
+```
+
+and you can uninstall said container again using:
+
+``` sh
+jag container uninstall print-service
+```
+
 ### Updating Jaguar via WiFi
 If you upgrade Jaguar, you will need to update the system software and the Jaguar application on your
 device. You can do this via WiFi simply by invoking:
@@ -112,6 +142,9 @@ device. You can do this via WiFi simply by invoking:
 ``` sh
 jag firmware update
 ```
+
+Updating the firmware will uninstall all containers and stop running applications, so those have to
+be transfered to the device again after the update.
 
 # Visual Studio Code
 The Toit SDK used by Jaguar comes with support for [Visual Studio Code](https://code.visualstudio.com/download).
@@ -146,17 +179,6 @@ The crash reporting component is [work in progress](https://github.com/toitlang/
 It is possible to provide options for `jag run` that control how your applications behave on your device. This section
 lists the options and provides an explanation for when they might come in handy.
 
-## Re-running when rebooting
-If you want your installed application to automatically run on reboots, you can ask Jaguar to install it with the
-`run.boot` option. Among other things, this is useful if you're testing deep sleep behavior.
-
-``` sh
-jag run -D run.boot hello.toit
-```
-
-This is a new feature in v1.4.6.
-
-
 ## Limiting application run time
 You can control how much time Jaguar gives your application to run through the `-D jag.timeout` setting. It takes a value 
 like `10s`, `5m`, or `1h` to indicate how many seconds, minutes, or hours the app can run before being shut down by Jaguar.
@@ -181,6 +203,20 @@ by passing a separate `-D jag.timeout` option:
 
 ``` sh
 jag run -D jag.disabled -D jag.timeout=5m softap.toit
+```
+
+This also works for installed containers. Containers that run with `-D jag.disabled` start when the device boots and
+runs to completion before Jaguar is enabled. This allows them to control the WiFi and to prevent Jaguar from taking
+over before they are ready for it:
+
+``` sh
+jag container install -D jag.disabled softap softap.toit
+```
+
+You can also set the timeout for them to make sure they cannot block enabling Jaguar forever:
+
+``` sh
+jag container install -D jag.disabled -D jag.timeout=20s softap softap.toit
 ```
 
 ---

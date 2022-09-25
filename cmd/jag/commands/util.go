@@ -59,7 +59,12 @@ func GetSDK(ctx context.Context) (*SDK, error) {
 	if !directory.IsReleaseBuild {
 		_, skipVersionCheck = os.LookupEnv(directory.ToitRepoPathEnv)
 	}
-	return res, res.validate(info, skipVersionCheck)
+	err = res.validate(info, skipVersionCheck)
+	if err != nil {
+		fmt.Printf("[jaguar] ERROR: Could not get the correct version of the SDK\n")
+		fmt.Printf("[jaguar] ERROR: Do you need to run `jag setup` or set `JAG_TOIT_REPO_PATH`?\n")
+	}
+	return res, err
 }
 
 func (s *SDK) ToitCompilePath() string {
@@ -90,8 +95,8 @@ func (s *SDK) SnapshotToImagePath() string {
 	return filepath.Join(s.Path, "tools", directory.Executable("snapshot_to_image"))
 }
 
-func (s *SDK) InjectConfigPath() string {
-	return filepath.Join(s.Path, "tools", directory.Executable("inject_config"))
+func (s *SDK) FirmwarePath() string {
+	return filepath.Join(s.Path, "tools", directory.Executable("firmware"))
 }
 
 func (s *SDK) StacktracePath() string {
@@ -127,9 +132,9 @@ func (s *SDK) validate(info Info, skipSDKVersionCheck bool) error {
 		s.ToitRunPath(),
 		s.ToitLspPath(),
 		s.VersionPath(),
+		s.FirmwarePath(),
 		s.SystemMessagePath(),
 		s.SnapshotToImagePath(),
-		s.InjectConfigPath(),
 		s.StacktracePath(),
 	}
 	for _, p := range paths {
@@ -165,6 +170,10 @@ func (s *SDK) ToitLsp(ctx context.Context, args []string) *exec.Cmd {
 	return exec.CommandContext(ctx, s.ToitLspPath(), args...)
 }
 
+func (s *SDK) Firmware(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, s.FirmwarePath(), args...)
+}
+
 func (s *SDK) SnapshotToImage(ctx context.Context, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, s.SnapshotToImagePath(), args...)
 }
@@ -175,10 +184,6 @@ func (s *SDK) SystemMessage(ctx context.Context, args ...string) *exec.Cmd {
 
 func (s *SDK) Stacktrace(ctx context.Context, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, s.StacktracePath(), args...)
-}
-
-func (s *SDK) InjectConfig(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, s.InjectConfigPath(), args...)
 }
 
 func (s *SDK) Compile(ctx context.Context, snapshot string, entrypoint string) error {
@@ -327,24 +332,25 @@ type encoder interface {
 	Encode(interface{}) error
 }
 
-func parseRunDefinesFlags(cmd *cobra.Command, flagName string) (string, error) {
+func parseDefineFlags(cmd *cobra.Command, flagName string) (string, error) {
 	if !cmd.Flags().Changed(flagName) {
 		return "", nil
 	}
 
-	definesFlags, err := cmd.Flags().GetStringArray(flagName)
+	defineFlags, err := cmd.Flags().GetStringArray(flagName)
 	if err != nil {
 		return "", err
 	}
 
 	definesMap := make(map[string]interface{})
-	for _, element := range definesFlags {
+	for _, element := range defineFlags {
 		indexOfAssign := strings.Index(element, "=")
+		var key string
 		if indexOfAssign < 0 {
-			key := strings.TrimSpace(element)
+			key = strings.TrimSpace(element)
 			definesMap[key] = true
 		} else {
-			key := strings.TrimSpace(element[0:indexOfAssign])
+			key = strings.TrimSpace(element[0:indexOfAssign])
 			value := strings.TrimSpace(element[indexOfAssign+1:])
 
 			// Try to parse the value as a JSON value and avoid turning
@@ -356,6 +362,14 @@ func parseRunDefinesFlags(cmd *cobra.Command, flagName string) (string, error) {
 			} else {
 				definesMap[key] = value
 			}
+		}
+		if key == "run.boot" {
+			fmt.Println()
+			fmt.Println("*********************************************")
+			fmt.Println("* Using 'jag run -D run.boot' is deprecated *")
+			fmt.Println("* .. use 'jag container install' instead .. *")
+			fmt.Println("*********************************************")
+			fmt.Println()
 		}
 	}
 	if len(definesMap) == 0 {
@@ -390,7 +404,7 @@ func parseOutputFlag(cmd *cobra.Command) (encoder, error) {
 	case "short":
 		return newShortEncoder(os.Stdout), nil
 	default:
-		return nil, fmt.Errorf("--ouput flag '%s' was not recognized. Must be either json, yaml or short.", output)
+		return nil, fmt.Errorf("--output flag '%s' was not recognized. Must be either json, yaml or short.", output)
 	}
 }
 
