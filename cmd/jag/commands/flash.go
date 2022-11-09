@@ -89,7 +89,7 @@ func hex(num int) string {
 
 func createZapBytesFile(sizes map[string]int, name string) (*os.File, error) {
 	// Create a file with zap bytes (0xff) for clearing select partitions.
-	zappedDataFile, err := os.CreateTemp("", fmt.Sprint("*.%sdata", name))
+	zappedDataFile, err := os.CreateTemp("", fmt.Sprintf("*.%sdata", name))
 	if err != nil {
 		return nil, err
 	}
@@ -109,12 +109,12 @@ func createZapBytesFile(sizes map[string]int, name string) (*os.File, error) {
 
 func FlashCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "flash",
+		Use:   "flash [envelope]",
 		Short: "Flash an ESP32 with the Jaguar firmware",
 		Long: "Flash an ESP32 with the Jaguar firmware. The initial flashing is\n" +
 			"done over a serial connection and it is used to give the ESP32 its initial\n" +
 			"firmware and the necessary WiFi credentials.",
-		Args:         cobra.NoArgs,
+		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -136,6 +136,11 @@ func FlashCmd() *cobra.Command {
 				return err
 			}
 
+			esptoolPath, err := directory.GetEsptoolPath()
+			if err != nil {
+				return err
+			}
+
 			id := uuid.New()
 			var name string
 			if cmd.Flags().Changed("name") {
@@ -152,30 +157,53 @@ func FlashCmd() *cobra.Command {
 				return err
 			}
 
-			esptoolPath, err := directory.GetEsptoolPath()
+			deviceOptions := DeviceOptions{
+				Id:           id.String(),
+				Name:         name,
+				WifiSsid:     wifiSSID,
+				WifiPassword: wifiPassword,
+			}
+
+			var envelopePath string
+			if len(args) == 1 {
+				envelopePath = args[0]
+			} else {
+				envelopePath, err = directory.GetFirmwareEnvelopePath("esp32")
+				if err != nil {
+					return err
+				}
+			}
+
+			excludeJaguar, err := cmd.Flags().GetBool("exclude-jaguar")
 			if err != nil {
 				return err
 			}
 
-			envelope, err := BuildFirmwareEnvelope(ctx, id.String(), name, wifiSSID, wifiPassword)
+			envelopeOptions := EnvelopeOptions{
+				Path:          envelopePath,
+				ExcludeJaguar: excludeJaguar,
+			}
+
+			envelopeFile, err := BuildFirmwareEnvelope(ctx, envelopeOptions, deviceOptions)
 			if err != nil {
 				return err
 			}
-			defer os.Remove(envelope.Name())
+			defer os.Remove(envelopeFile.Name())
 
-			firmwareBin, err := ExtractFirmwarePart(ctx, sdk, envelope.Name(), "firmware.bin")
+			config := deviceOptions.GetConfig()
+			firmwareBin, err := ExtractFirmware(ctx, sdk, envelopeFile.Name(), config)
 			if err != nil {
 				return err
 			}
 			defer os.Remove(firmwareBin.Name())
 
-			bootloaderBin, err := ExtractFirmwarePart(ctx, sdk, envelope.Name(), "bootloader.bin")
+			bootloaderBin, err := ExtractFirmwarePart(ctx, sdk, envelopeFile.Name(), "bootloader.bin")
 			if err != nil {
 				return err
 			}
 			defer os.Remove(bootloaderBin.Name())
 
-			partitionsBin, err := ExtractFirmwarePart(ctx, sdk, envelope.Name(), "partitions.bin")
+			partitionsBin, err := ExtractFirmwarePart(ctx, sdk, envelopeFile.Name(), "partitions.bin")
 			if err != nil {
 				return err
 			}
@@ -184,7 +212,7 @@ func FlashCmd() *cobra.Command {
 			positions := make(map[string]int)
 			sizes := make(map[string]int)
 
-			getPartitions(ctx, sdk, envelope.Name(), positions, sizes)
+			getPartitions(ctx, sdk, envelopeFile.Name(), positions, sizes)
 
 			// Create a file with zap bytes (0xff) for clearing the OTA data partition.
 			zappedOtaDataFile, err := createZapBytesFile(sizes, "ota")
@@ -232,5 +260,6 @@ func FlashCmd() *cobra.Command {
 	cmd.Flags().String("wifi-ssid", "", "default WiFi network name")
 	cmd.Flags().String("wifi-password", "", "default WiFi password")
 	cmd.Flags().String("name", "", "name for the device, if not set a name will be auto generated")
+	cmd.Flags().Bool("exclude-jaguar", false, "don't install the Jaguar service")
 	return cmd
 }
