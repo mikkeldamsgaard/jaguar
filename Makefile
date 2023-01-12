@@ -26,7 +26,7 @@ JAG_TOIT_SOURCES := $(shell find src -name '*.toit') package.lock package.yaml
 JAG_GO_SOURCES := $(shell find cmd -name '*.go')
 
 # Setup Go compilation flags.
-GO_BUILD_FLAGS := CGO_ENABLED=1 GODEBUG=netdns=go
+GO_BUILD_FLAGS := GODEBUG=netdns=go
 GO_LINK_FLAGS := $(GO_LINK_FLAGS) -extldflags '-static'
 GO_LINK_FLAGS += -X 'main.buildDate="$(BUILD_DATE)"'
 ifdef JAG_BUILD_RELEASE
@@ -90,9 +90,15 @@ $(JAG_TOIT_DEPENDENCIES): $(SDK_BUILD_MARKER)
 # The SDK build marker is *not* phony, so we only
 # use the rule once per invocation of this Makefile.
 $(SDK_BUILD_MARKER):
-	make -C $(JAG_TOIT_REPO_PATH) version-file esp32
+	make -C $(JAG_TOIT_REPO_PATH) version-file esp32 esptool
 	mkdir -p $(BUILD_DIR)
 	echo "$(BUILD_DATE)" > $@
+
+.PHONY: all-chips
+all-chips:
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s2 esp32
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s3 esp32
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32c3 esp32
 
 .PHONY: force-rebuild-sdk
 force-rebuild-sdk:
