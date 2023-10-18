@@ -19,12 +19,18 @@ import (
 	"github.com/toitlang/jaguar/cmd/jag/directory"
 )
 
-func getToitSDKURL(version string) string {
+func getToitSDKURL(version string) (string, error) {
 	currOS := runtime.GOOS
 	if currOS == "darwin" {
 		currOS = "macos"
+	} else {
+		currARCH := runtime.GOARCH
+		if currARCH == "arm" || currARCH == "arm64" {
+			fmt.Printf("Enter the URL of the ARM SDK (version %v): ", version)
+			return ReadLine()
+		}
 	}
-	return fmt.Sprintf("https://github.com/toitlang/toit/releases/download/%s/toit-%s.tar.gz", version, currOS)
+	return fmt.Sprintf("https://github.com/toitlang/toit/releases/download/%s/toit-%s.tar.gz", version, currOS), nil
 }
 
 func getAssetsURL(version string) string {
@@ -221,9 +227,12 @@ func downloadSdk(ctx context.Context, version string) error {
 }
 
 func downloadSdkTo(ctx context.Context, version string, sdkPath string) error {
-	sdkURL := getToitSDKURL(version)
+	sdkURL, err := getToitSDKURL(version)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Downloading Toit SDK from %s ...\n", sdkURL)
-	sdk, err := download(ctx, getToitSDKURL(version))
+	sdk, err := download(ctx, sdkURL)
 	if err != nil {
 		return err
 	}

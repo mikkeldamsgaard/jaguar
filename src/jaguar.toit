@@ -8,7 +8,6 @@ import net
 import net.udp
 import net.tcp
 import reader
-import esp32
 import uuid
 import monitor
 
@@ -24,7 +23,7 @@ import .container_registry
 HTTP_PORT        ::= 9000
 IDENTIFY_PORT    ::= 1990
 IDENTIFY_ADDRESS ::= net.IpAddress.parse "255.255.255.255"
-STATUS_OK        ::= """{ "status": "OK" }"""
+STATUS_OK_JSON   ::= """{ "status": "OK" }"""
 
 HEADER_DEVICE_ID         ::= "X-Jaguar-Device-ID"
 HEADER_SDK_VERSION       ::= "X-Jaguar-SDK-Version"
@@ -33,12 +32,18 @@ HEADER_CONTAINER_NAME    ::= "X-Jaguar-Container-Name"
 HEADER_CONTAINER_TIMEOUT ::= "X-Jaguar-Container-Timeout"
 
 // Defines recognized by Jaguar for /run and /install requests.
-JAG_DISABLED       ::= "jag.disabled"
-JAG_TIMEOUT        ::= "jag.timeout"
+JAG_DISABLED ::= "jag.disabled"
+JAG_TIMEOUT  ::= "jag.timeout"
+
+// Assets for the mini-webpage that the device serves up on $HTTP_PORT.
+CHIP_IMAGE ::= "https://toitlang.github.io/jaguar/device-files/chip.svg"
+STYLE_CSS ::= "https://toitlang.github.io/jaguar/device-files/style.css"
 
 logger ::= log.Logger log.INFO_LEVEL log.DefaultTarget --name="jaguar"
-validate_firmware / bool := firmware.is_validation_pending
 flash_mutex ::= monitor.Mutex
+
+firmware_is_validation_pending / bool := firmware.is_validation_pending
+firmware_is_upgrade_pending / bool := false
 
 /**
 Jaguar can run containers while Jaguar itself is disabled. You can
@@ -105,17 +110,25 @@ serve arguments:
     failures := 0
     while failures < attempts:
       exception := catch: run device
+      // If we have a pending firmware upgrade, we take care of
+      // it before trying to re-open the network.
+      if firmware_is_upgrade_pending: firmware.upgrade
+      // If Jaguar needs to be disabled, we stop here and wait until
+      // we can re-enable Jaguar.
       if disabled:
         network_free.up      // Signal to start running the container.
         container_done.down  // Wait until done running the container.
         disabled = false
-      if not exception: continue
-      failures++
-      logger.warn "running Jaguar failed due to '$exception' ($failures/$attempts)"
+        continue
+      // Log exceptions and count the failures so we can back off
+      // and avoid excessive attempts to re-open the network.
+      if exception:
+        failures++
+        logger.warn "running Jaguar failed due to '$exception' ($failures/$attempts)"
     // If we need to validate the firmware and we've failed to do so
     // in the first round of attempts, we roll back to the previous
     // firmware right away.
-    if validate_firmware:
+    if firmware_is_validation_pending:
       logger.error "firmware update was rejected after failing to connect or validate"
       firmware.rollback
     backoff := Duration --s=5
@@ -160,14 +173,9 @@ class Device:
         --chip=chip or "unknown"
 
 run device/Device:
-  broadcast_task := null
-  server_task := null
-  network/net.Interface? := null
-  error := null
-
+  network ::= net.open
   socket/tcp.ServerSocket? := null
   try:
-    network = net.open
     socket = network.tcp_listen device.port
     address := "http://$network.address:$socket.local_address.port"
     logger.info "running Jaguar device '$device.name' (id: '$device.id') on '$address'"
@@ -175,43 +183,27 @@ run device/Device:
     // We've successfully connected to the network, so we consider
     // the current firmware functional. Go ahead and validate the
     // firmware if requested to do so.
-    if validate_firmware:
+    if firmware_is_validation_pending:
       if firmware.validate:
         logger.info "firmware update validated after connecting to network"
-        validate_firmware = false
+        firmware_is_validation_pending = false
       else:
         logger.error "firmware update failed to validate"
 
     // We run two tasks concurrently: One broadcasts the device identity
-    // via UDP and one serves incoming HTTP requests. If one of the tasks
-    // fail, we take the other one down to clean up nicely.
-    done := monitor.Semaphore
-    server_task = task::
-      try:
-        error = catch: serve_incoming_requests socket device address
-      finally:
-        server_task = null
-        if broadcast_task: broadcast_task.cancel
-        critical_do: done.up
-
-    broadcast_task = task::
-      try:
-        error = catch: broadcast_identity network device address
-      finally:
-        broadcast_task = null
-        if server_task: server_task.cancel
-        critical_do: done.up
-
-    // Wait for both tasks to finish.
-    2.repeat: done.down
-
+    // via UDP and one serves incoming HTTP requests. We run the tasks
+    // in a group so if one of them terminates, we take the other one down
+    // and clean up nicely.
+    Task.group --required=1 [
+      :: broadcast_identity network device address,
+      :: serve_incoming_requests socket device address,
+    ]
   finally:
     if socket: socket.close
-    if network: network.close
-    if error: throw error
+    network.close
 
 flash_image image_size/int reader/reader.Reader name/string? defines/Map -> uuid.Uuid:
-  with_timeout --ms=60_000: flash_mutex.do:
+  with_timeout --ms=120_000: flash_mutex.do:
     image := registry_.install name defines:
       logger.debug "installing container image with $image_size bytes"
       written_size := 0
@@ -309,7 +301,7 @@ run_code image_size/int reader/reader.Reader defines/Map -> none:
     if disabled: container_done.up
 
 install_firmware firmware_size/int reader/reader.Reader -> none:
-  with_timeout --ms=120_000: flash_mutex.do:
+  with_timeout --ms=300_000: flash_mutex.do:
     logger.info "installing firmware with $firmware_size bytes"
     written_size := 0
     writer := firmware.FirmwareWriter 0 firmware_size
@@ -323,7 +315,7 @@ install_firmware firmware_size/int reader/reader.Reader -> none:
           logger.info "installing firmware with $firmware_size bytes ($percent%)"
           last = percent
       writer.commit
-      logger.info "installed firmware; rebooting"
+      logger.info "installed firmware; ready to update on chip reset"
     finally:
       writer.close
 
@@ -360,7 +352,6 @@ handle_browser_request name/string request/http.Request writer/http.ResponseWrit
   path := request.path
   if path == "/": path = "index.html"
   if path.starts_with "/": path = path[1..]
-  CHIP_IMAGE ::= "https://toit.io/static/chip-e4ce030bdea3996fa7ad44ff63d88e52.svg"
 
   if path == "index.html":
     uptime ::= Duration --s=Time.monotonic_us / Duration.MICROSECONDS_PER_SECOND
@@ -369,7 +360,7 @@ handle_browser_request name/string request/http.Request writer/http.ResponseWrit
     writer.write """
         <html>
           <head>
-            <link rel="stylesheet" href="style.css">
+            <link rel="stylesheet" href="$STYLE_CSS">
             <title>$name (Jaguar device)</title>
           </head>
           <body>
@@ -395,104 +386,18 @@ handle_browser_request name/string request/http.Request writer/http.ResponseWrit
           </body>
         </html>
         """
-  else if path == "style.css":
-    writer.headers.set "Content-Type" "text/css"
-    writer.write """
-        body {
-          background-color: #F8FAFC;
-          color: #444;
-        }
-        h1 {
-          font-family: -apple-system, "Helvetica Neue", Arial;
-          text-align: center;
-          font-size: 40px;
-          margin-top: 0;
-          margin-bottom: 15px;
-          color: #444;
-        }
-        p {
-          margin: 0;
-        }
-        .box {
-          position: relative;
-          border: none;
-          background: #fff;
-          border-radius: 16px;
-          box-shadow: #FFF 0 0 0 0 inset, #00000019 0 0 0 1px inset,
-          #0000 0 0 0 0, #0000 0 0 0 0, #E2E8F0 0 20px 25px -5px, #E2E8F0 0 8px 10px -6px;
-          box-sizing: border-box;
-          display: block;
-          line-height: 24px;
-          padding: 12px;
-          width: max-content;
-          margin: auto;
-          margin-top: 60px;
-          padding-left: 20px;
-          min-width: 360px;
-        }
-        .icon {
-          padding-top: 20px;
-          color: #55A398;
-          position: relative;
-          width: 140px;
-        }
-        p, div {
-          -webkit-font-smoothing: antialiased;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-          font-size: 14px;
-          color: #64748B;
-          margin: 0;
-        }
-        .text-center {
-          text-align: center;
-        }
-        .hr {
-          -webkit-font-smoothing: antialiased;
-          background-image: linear-gradient(to right, #E2E8F000, #E2E8F0, #E3E8F000);
-          height: 1px;
-          width: 100%;
-        }
-        a {
-          color: #55A398;
-        }
-        a:link {
-          text-decoration: none;
-          color: #55A398;
-        }
-        a:hover {
-          text-decoration: underline;
-        }
-        .text-black {
-          color: #000;
-        }
-        .mt-40 {
-          margin-top: 40px;
-        }
-        .mt-20 {
-          margin-top: 20px;
-        }
-        .mb-20 {
-          margin-bottom: 20px;
-        }
-        .grid {
-          display: grid;
-        }
-        .grid-cols-2	 {
-          grid-template-columns: 1fr 3fr;
-        }
-        """
   else if path == "favicon.ico":
-    writer.headers.set "Location" CHIP_IMAGE
-    writer.write_headers 302
+    writer.redirect http.STATUS_FOUND CHIP_IMAGE
   else:
     writer.headers.set "Content-Type" "text/plain"
-    writer.write_headers 404
+    writer.write_headers http.STATUS_NOT_FOUND
     writer.write "Not found: $path"
 
 serve_incoming_requests socket/tcp.ServerSocket device/Device address/string -> none:
   self := Task.current
 
   server := http.Server --logger=logger
+
   server.listen socket:: | request/http.Request writer/http.ResponseWriter |
     headers ::= request.headers
     device_id := "$device.id"
@@ -501,9 +406,11 @@ serve_incoming_requests socket/tcp.ServerSocket device/Device address/string -> 
     path := request.path
 
     // Handle identification requests before validation, as the caller doesn't know that information yet.
-    if path == "/identify" and request.method == "GET":
-      writer.write
-          identity_payload device address
+    if path == "/identify" and request.method == http.GET:
+      writer.headers.set "Content-Type" "application/json"
+      result := identity_payload device address
+      writer.headers.set "Content-Length" result.size.stringify
+      writer.write result
 
     else if path == "/" or path.ends_with ".html" or path.ends_with ".css" or path.ends_with ".ico":
       handle_browser_request device.name request writer
@@ -511,58 +418,54 @@ serve_incoming_requests socket/tcp.ServerSocket device/Device address/string -> 
     // Validate device ID.
     else if device_id_header != device_id:
       logger.info "denied request, header: '$HEADER_DEVICE_ID' was '$device_id_header' not '$device_id'"
-      writer.write_headers 403 --message="Device has id '$device_id', jag is trying to talk to '$device_id_header'"
+      writer.write_headers http.STATUS_FORBIDDEN --message="Device has id '$device_id', jag is trying to talk to '$device_id_header'"
 
     // Handle pings.
-    else if path == "/ping" and request.method == "GET":
-      writer.write STATUS_OK
+    else if path == "/ping" and request.method == http.GET:
+      respond_ok writer
 
     // Handle listing containers.
-    else if path == "/list" and request.method == "GET":
-      writer.write (ubjson.encode registry_.entries)
+    else if path == "/list" and request.method == http.GET:
+      result := ubjson.encode registry_.entries
+      writer.headers.set "Content-Type" "application/ubjson"
+      writer.headers.set "Content-Length" result.size.stringify
+      writer.write result
 
     // Handle uninstalling containers.
-    else if path == "/uninstall" and request.method == "PUT":
+    else if path == "/uninstall" and request.method == http.PUT:
       container_name ::= headers.single HEADER_CONTAINER_NAME
       uninstall_image container_name
-      writer.write STATUS_OK
+      respond_ok writer
 
     // Handle firmware updates.
-    else if path == "/firmware" and request.method == "PUT":
+    else if path == "/firmware" and request.method == http.PUT:
       install_firmware request.content_length request.body
-      writer.write STATUS_OK
-      // TODO(kasper): Maybe we can share the way we try to close down
-      // the HTTP server nicely with the corresponding code where we
-      // handle /code requests?
-      writer.detach.close  // Close connection nicely before upgrading.
-      sleep --ms=500
-      firmware.upgrade
+      respond_ok writer
+      // Mark the firmware as having a pending upgrade and close
+      // the server socket to force the HTTP sever loop to stop.
+      firmware_is_upgrade_pending = true
+      socket.close
 
     // Validate SDK version before attempting to install containers or run code.
     else if sdk_version_header != vm_sdk_version:
       logger.info "denied request, header: '$HEADER_SDK_VERSION' was '$sdk_version_header' not '$vm_sdk_version'"
-      writer.write_headers 406 --message="Device has $vm_sdk_version, jag has $sdk_version_header"
+      writer.write_headers http.STATUS_NOT_ACCEPTABLE --message="Device has $vm_sdk_version, jag has $sdk_version_header"
 
     // Handle installing containers.
     else if path == "/install" and request.method == "PUT":
       container_name ::= headers.single HEADER_CONTAINER_NAME
       defines ::= extract_defines headers
       install_image request.content_length request.body container_name defines
-      writer.write STATUS_OK
+      respond_ok writer
 
     // Handle code running.
     else if path == "/run" and request.method == "PUT":
       defines ::= extract_defines headers
       run_code request.content_length request.body defines
-      writer.write STATUS_OK
-      if disabled:
-        // TODO(kasper): There is no great way of closing down the HTTP server loop
-        // and make sure we get a response delivered to all clients. For now, we
-        // hope that sleeping for 0.5s is enough and then we simply cancel the task
-        // responsible for running the loop.
-        task::
-          sleep --ms=500
-          self.cancel
+      respond_ok writer
+      // If the code needs to run with Jaguar disabled, we close
+      // the server socket to force the HTTP sever loop to stop.
+      if disabled: socket.close
 
 extract_defines headers/http.Headers -> Map:
   defines := {:}
@@ -572,3 +475,8 @@ extract_defines headers/http.Headers -> Map:
     timeout := int.parse header --on_error=: null
     if timeout: defines[JAG_TIMEOUT] = timeout
   return defines
+
+respond_ok writer/http.ResponseWriter -> none:
+  writer.headers.set "Content-Type" "application/json"
+  writer.headers.set "Content-Length" STATUS_OK_JSON.size.stringify
+  writer.write STATUS_OK_JSON

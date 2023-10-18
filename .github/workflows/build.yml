@@ -7,10 +7,15 @@ on:
     # You also have to change the description slightly, if you want to change a
     # prerelease to a release.
     types: [ published, edited ]
+  workflow_dispatch:
 
 jobs:
   build_jag:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        container: [ ubuntu-latest, ubuntu-20.04 ]
+
+    runs-on: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v3
 
@@ -28,13 +33,17 @@ jobs:
           GOOS=linux make JAG_BINARY=linux/jag jag
           GOOS=darwin make JAG_BINARY=macos/jag jag
           GOOS=windows make JAG_BINARY=windows/jag.exe jag
+          GOOS=linux GOARCH=arm make JAG_BINARY=linux-arm/jag jag
+          GOOS=linux GOARCH=arm64 make JAG_BINARY=linux-arm64/jag jag
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: jag-build
+          name: jag-build-${{ matrix.container }}
           path: |
             build/linux/
+            build/linux-arm/
+            build/linux-arm64/
             build/macos/
             build/windows/
 
@@ -42,6 +51,16 @@ jobs:
         working-directory: ./build/linux
         run: |
           tar -czf jag.tgz jag
+
+      - name: Create archive Linux ARM
+        working-directory: ./build/linux-arm
+        run: |
+          tar -czf jag-arm.tgz jag
+
+      - name: Create archive Linux ARM64
+        working-directory: ./build/linux-arm64
+        run: |
+          tar -czf jag-arm64.tgz jag
 
       - name: Check version number
         if: github.event_name == 'release'
@@ -52,7 +71,7 @@ jobs:
           ./jag --no-analytics version | head -n1 | grep --fixed-strings "${{ github.event.release.tag_name }}"
 
       - name: Upload jag Linux (tgz)
-        if: github.event_name == 'release'
+        if: (github.event_name == 'release') && (matrix.container == 'ubuntu-20.04')
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -61,16 +80,40 @@ jobs:
           asset_name: jag_linux.tgz
           overwrite: true
 
+      - name: Upload jag Linux ARM (tgz)
+        if: (github.event_name == 'release') && (matrix.container == 'ubuntu-20.04')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/linux-arm/jag-arm.tgz
+          tag: ${{ github.ref }}
+          asset_name: jag_linux_arm.tgz
+          overwrite: true
+
+      - name: Upload jag Linux ARM64 (tgz)
+        if: (github.event_name == 'release') && (matrix.container == 'ubuntu-20.04')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/linux-arm64/jag-arm64.tgz
+          tag: ${{ github.ref }}
+          asset_name: jag_linux_arm64.tgz
+          overwrite: true
+
   sign_jag_windows:
     runs-on: windows-signing
     needs: [build_jag]
     if: github.event_name == 'release'
     steps:
+      - name: Clean workspace
+        run: |
+          rm -Recurse -Force ${{ github.workspace }}\*
+
       - uses: actions/checkout@v3
 
       - uses: actions/download-artifact@v3
         with:
-          name: jag-build
+          name: jag-build-ubuntu-latest
           path: build
 
       - name: Sign jag
@@ -81,7 +124,7 @@ jobs:
 
       - name: Version number
         id: version
-        shell: pwsh
+        shell: powershell
         run: |
           $versionV = "${{ github.event.release.tag_name }}"
           $version = $versionV.Substring(1)
@@ -135,7 +178,7 @@ jobs:
     steps:
       - name: Version number
         id: version
-        shell: pwsh
+        shell: powershell
         run: |
           $versionV = "${{ github.event.release.tag_name }}"
           $version = $versionV.Substring(1)
@@ -158,7 +201,7 @@ jobs:
 
       - uses: actions/download-artifact@v3
         with:
-          name: jag-build
+          name: jag-build-ubuntu-latest
           path: build
 
       - name: Setup binary rights
@@ -166,7 +209,7 @@ jobs:
           chmod +x build/macos/jag
 
       - name: Import signing keychain
-        uses: apple-actions/import-codesign-certs@v1
+        uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
           p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}

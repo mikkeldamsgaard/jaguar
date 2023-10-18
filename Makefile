@@ -27,7 +27,6 @@ JAG_GO_SOURCES := $(shell find cmd -name '*.go')
 
 # Setup Go compilation flags.
 GO_BUILD_FLAGS := GODEBUG=netdns=go
-GO_LINK_FLAGS := $(GO_LINK_FLAGS) -extldflags '-static'
 GO_LINK_FLAGS += -X 'main.buildDate="$(BUILD_DATE)"'
 ifdef JAG_BUILD_RELEASE
 GO_LINK_FLAGS += -X 'main.buildMode=release'
@@ -96,9 +95,10 @@ $(SDK_BUILD_MARKER):
 
 .PHONY: all-chips
 all-chips:
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32c3 esp32
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s2 esp32
 	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s3 esp32
-	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32c3 esp32
+	make -C $(JAG_TOIT_REPO_PATH) ESP32_CHIP=esp32s3-spiram-octo esp32
 
 .PHONY: force-rebuild-sdk
 force-rebuild-sdk:
